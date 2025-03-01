@@ -34,8 +34,7 @@ class SyncPackagesCommand extends BaseCommand
             $output->writeln('<error>Invalid source or target path, or composer.json not found.</error>');
             return BaseCommand::FAILURE;
         }
-
-        $sourceComposerData = $this->loadComposerData($sourceComposerPath);
+        $sourceComposerData = json_decode(file_get_contents($sourceComposerPath), true);
         $targetComposerData = json_decode(file_get_contents($targetComposerPath), true);
 
         // If subpackage is provided, load its dependencies
@@ -51,11 +50,12 @@ class SyncPackagesCommand extends BaseCommand
 
         // Sync repositories
         $repositoriesSynced = $this->syncRepositories($sourceComposerData, $targetComposerData, $output);
-
-        if ($packagesUpdated || $repositoriesSynced) {
+        // Sync patches
+        $patchesUpdated = $this->syncPatches($sourceComposerData, $targetComposerData, $output);
+        if ($packagesUpdated || $repositoriesSynced || $patchesUpdated) {
             $output->writeln('<info>Composer update may be required to apply changes.</info>');
         } else {
-            $output->writeln('<info>No updates or repository changes necessary.</info>');
+            $output->writeln('<info>No updates, repository, or patch changes necessary.</info>');
         }
 
         return BaseCommand::SUCCESS;
@@ -143,7 +143,41 @@ class SyncPackagesCommand extends BaseCommand
         if ($repositoriesSynced) {
             file_put_contents(getcwd() . '/composer.json', json_encode($targetData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
         }
-
         return $repositoriesSynced;
     }
- }
+
+    private function syncPatches(array $sourceData, array &$targetData, OutputInterface $output): bool
+    {
+        $patchesUpdated = false;
+        if (!isset($sourceData['extra']['patches']) || !is_array($sourceData['extra']['patches'])) {
+            return false;
+        }
+        if (!isset($targetData['extra']['patches'])) {
+            $targetData['extra']['patches'] = [];
+        }
+        $existingPatches = [];
+        // Collect all existing patches in the target by value
+        foreach ($targetData['extra']['patches'] as $package => $patchList) {
+            foreach ($patchList as $patchDescription => $patchValue) {
+                $existingPatches[$patchValue] = $package;
+            }
+        }
+        foreach ($sourceData['extra']['patches'] as $package => $patchList) {
+            foreach ($patchList as $patchDescription => $patchValue) {
+                if (!in_array($patchValue, array_keys($existingPatches))) {
+                    $output->writeln("<info>Adding patch for $package: $patchValue</info>");
+                    if (!isset($targetData['extra']['patches'][$package])) {
+                        $targetData['extra']['patches'][$package] = [];
+                    }
+                    // Use a new key for the patch description to avoid conflicts
+                    $targetData['extra']['patches'][$package][$patchDescription] = $patchValue;
+                    $patchesUpdated = true;
+                }
+            }
+        }
+        if ($patchesUpdated) {
+            file_put_contents(getcwd() . '/composer.json', json_encode($targetData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        }
+        return $patchesUpdated;
+    }
+}
